@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://edgarleonarchuleta19.github.io/amapa-editor/"><img src="https://img.shields.io/badge/Demo_en_Vivo-GitHub_Pages-black?style=for-the-badge&logo=github" alt="Live Demo" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/Licencia-MIT-green?style=for-the-badge" alt="License" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/Licencia-Atribuci%C3%B3n--NoComercial-black?style=for-the-badge" alt="License" /></a>
   <img src="https://img.shields.io/badge/React-18-blue?style=for-the-badge&logo=react" alt="React 18" />
   <img src="https://img.shields.io/badge/TypeScript-5-blue?style=for-the-badge&logo=typescript" alt="TypeScript" />
   <img src="https://img.shields.io/badge/Vite-6-purple?style=for-the-badge&logo=vite" alt="Vite" />
@@ -150,24 +150,12 @@ npm run build
 
 ---
 
-## ⚖️ Derechos de Autor y Licencia
+## ⚖️ Derechos de Autor y Licencia (Uso No Comercial)
 
-### ¿Es Open Source pero a la vez es mío?
-**Totalmente sí.** No hay ninguna contradicción:
-- **Derechos de Autor (Copyright)**: La autoría moral y la propiedad intelectual del código fuente le pertenecen al 100% a **Edgar León Archuleta**. Nadie puede atribuirse la creación original del proyecto.
-- **Licencia de Código Abierto (MIT)**: Es la autorización legal que el autor otorga a la comunidad mundial para que cualquier persona pueda ver, aprender, utilizar, modificar y distribuir el software libremente, bajo la condición obligatoria de **preservar el aviso de copyright y la atribución original**.
+Este proyecto está protegido bajo una **[Licencia de Uso No Comercial con Atribución Obligatoria](./LICENSE)** (*Copyright © 2026 Edgar León Archuleta*).
 
-```text
-MIT License
-
-Copyright (c) 2026 Edgar León Archuleta
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software...
-```
+- **✅ Autoría y Atribución Obligatoria:** La propiedad intelectual del código fuente pertenece al 100% a **Edgar León Archuleta (@EdgarLeonArchuleta19)**. Cualquier estudio, referencia o bifurcación (*fork*) debe mantener de forma visible el aviso de copyright y dar crédito explícito al autor original.
+- **🚫 Prohibido el Uso Comercial:** Queda **estrictamente prohibido** vender, sublicenciar, comercializar o explotar este editor o su código fuente con fines de lucro o empresariales sin autorización previa y por escrito del autor.
 
 ---
 
