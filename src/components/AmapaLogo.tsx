@@ -1,0 +1,43 @@
+import React, { useState } from 'react';
+
+interface AmapaLogoProps {
+  size?: number;
+}
+
+export const AmapaLogo: React.FC<AmapaLogoProps> = ({ size = 26 }) => {
+  const [imgError, setImgError] = useState(false);
+
+  if (!imgError) {
+    return (
+      <img
+        src="/amapa-logo.png"
+        alt="AMAPA"
+        width={size}
+        height={size}
+        className="amapa-logo-img"
+        onError={() => setImgError(true)}
+      />
+    );
+  }
+
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 64 64"
+      width={size}
+      height={size}
+      className="amapa-logo-svg"
+      aria-hidden="true"
+    >
+      <rect width="64" height="64" rx="14" fill="#09090b" stroke="#27272a" strokeWidth="2" />
+      <g fill="#ffffff">
+        <path d="M32 10 C35.5 17 37.5 22 32 27.5 C26.5 22 28.5 17 32 10 Z" />
+        <path d="M51 22 C44 26.5 39 27.5 34.5 29 C38 22.5 43.5 19.5 51 22 Z" />
+        <path d="M45 43 C38.5 39.5 35.5 35.5 33.5 31 C40 31.5 44.5 36 45 43 Z" />
+        <path d="M19 43 C19.5 36 24 31.5 30.5 31 C28.5 35.5 25.5 39.5 19 43 Z" />
+        <path d="M13 22 C20.5 19.5 26 22.5 29.5 29 C25 27.5 20 26.5 13 22 Z" />
+        <path d="M30.5 33 L33.5 33 L34.8 53 C34.8 53.6 34.3 54 33.7 54 L30.3 54 C29.7 54 29.2 53.6 29.2 53 Z" />
+      </g>
+    </svg>
+  );
+};
