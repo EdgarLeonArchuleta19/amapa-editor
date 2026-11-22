@@ -41,6 +41,7 @@ import {
 } from './engine/timelineEngine';
 import { analyzeMediaFile } from './engine/mediaAnalyzer';
 import { playheadBus } from './engine/playheadBus';
+import { rustRevealInExplorer, rustSaveExportedFile } from './engine/tauriBridge';
 import {
   loadAutosavedProject,
   loadProjectById,
@@ -340,14 +341,22 @@ export const App: React.FC = () => {
     setTimeout(() => setLastSavedMessage(null), 2500);
   }, [project, locale]);
 
-  const handleExportProjectJson = useCallback(() => {
+  const handleExportProjectJson = useCallback(async () => {
     const json = serializeProject(project);
     const blob = new Blob([json], { type: 'application/json' });
+    const safeName = project.name.toLowerCase().replace(/[^a-z0-9-_]+/g, '-') || 'project';
+    const filename = `${safeName}.amapa.json`;
+
+    const savedPath = await rustSaveExportedFile(filename, blob);
+    if (savedPath) {
+      await rustRevealInExplorer(savedPath);
+      return;
+    }
+
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    const safeName = project.name.toLowerCase().replace(/[^a-z0-9-_]+/g, '-') || 'project';
     a.href = url;
-    a.download = `${safeName}.amapa.json`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
   }, [project]);
@@ -534,14 +543,16 @@ export const App: React.FC = () => {
         <PropertiesPanel
           selectedClip={selectedClip}
           locale={locale}
+          onBeginDrag={handleBeginDrag}
+          onEndDrag={handleEndDrag}
           onUpdateClip={(clipId: string, updater: (c: TimelineClip) => TimelineClip) =>
-            commitProject(updateClip(project, clipId, updater))
+            applyDragOrCommit((base) => updateClip(base, clipId, updater))
           }
           onChangeClipSpeed={(clipId: string, speed: number) =>
-            commitProject(setClipPlaybackSpeed(project, clipId, speed))
+            applyDragOrCommit((base) => setClipPlaybackSpeed(base, clipId, speed))
           }
           onTrimClipEnd={(clipId: string, newDuration: number) =>
-            commitProject(trimClipEnd(project, clipId, newDuration))
+            applyDragOrCommit((base) => trimClipEnd(base, clipId, newDuration))
           }
           onDetachAudio={handleDetachAudio}
         />

@@ -148,4 +148,18 @@ mod tests {
         assert!(snap.did_snap);
         assert_eq!(snap.snapped_time, 5.0);
     }
+
+    #[test]
+    fn test_rust_timecode_and_multichannel_wav() {
+        assert_eq!(timeline_math::format_timecode(0.0, 30), "00:00.00");
+        assert_eq!(timeline_math::format_timecode(1.5, 30), "00:01.15");
+        assert_eq!(timeline_math::format_timecode(3661.0, 30), "01:01:01.00");
+
+        let ch_l = vec![0.25_f32; 128];
+        let ch_r = vec![-0.25_f32; 128];
+        let wav = audio_dsp::encode_multichannel_wav(&[ch_l, ch_r], 48000);
+        // 44 byte header + 128 frames * 2 channels * 2 bytes = 44 + 512 = 556 bytes
+        assert_eq!(wav.len(), 556);
+        assert_eq!(&wav[0..4], b"RIFF");
+    }
 }

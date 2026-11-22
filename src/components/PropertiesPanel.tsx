@@ -30,6 +30,8 @@ interface PropertiesPanelProps {
   onChangeClipSpeed: (clipId: string, speed: number) => void;
   onTrimClipEnd: (clipId: string, newDuration: number) => void;
   onDetachAudio?: (clipId: string) => void;
+  onBeginDrag?: () => void;
+  onEndDrag?: () => void;
 }
 
 export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
@@ -39,6 +41,8 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   onChangeClipSpeed,
   onTrimClipEnd,
   onDetachAudio,
+  onBeginDrag,
+  onEndDrag,
 }) => {
   const t = (key: string) => translate(locale, key);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -84,7 +88,19 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   const isText = selectedClip.kind === 'text';
 
   return (
-    <aside className="panel properties-panel" aria-label={t('inspector.title')}>
+    <aside
+      className="panel properties-panel"
+      aria-label={t('inspector.title')}
+      onPointerDownCapture={(e) => {
+        const el = e.target as HTMLInputElement | null;
+        if (el && el.tagName === 'INPUT' && el.type === 'range' && onBeginDrag) {
+          onBeginDrag();
+        }
+      }}
+      onPointerUpCapture={() => {
+        if (onEndDrag) onEndDrag();
+      }}
+    >
       <div className="panel-header-bar">
         <div className="inspector-clip-header">
           <span className="clip-kind-badge">{selectedClip.kind.toUpperCase()}</span>

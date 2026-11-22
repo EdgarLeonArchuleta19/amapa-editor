@@ -1,24 +1,26 @@
-# Third-Party Notices and License Audit
+# Avisos de Terceros y Auditoría de Licencias (AMAPA Desktop)
 
-AMAPA is licensed under the **MIT License**. Every runtime dependency bundled with AMAPA has been audited for open-source license compatibility and free redistribution rights.
+**AMAPA** se distribuye bajo la **[Licencia MIT](./LICENSE)** (`Copyright (c) 2026 Edgar León Archuleta`). Todas las dependencias de Rust y Frontend incluidas en AMAPA utilizan licencias permisivas de código abierto compatibles con redistribución libre.
 
-## Runtime Dependencies
+## 1. Dependencias del Núcleo Nativo en Rust (`src-tauri/Cargo.toml`)
 
-| Package | License | Purpose |
+| Crate | Licencia | Propósito |
 | :--- | :--- | :--- |
-| `react` | MIT | Declarative UI rendering |
-| `react-dom` | MIT | DOM bindings for React |
-| `lucide-react` | ISC | Accessible vector icons |
-| `mp4-muxer` | MIT | Pure TypeScript ISO BMFF / MP4 container muxer for WebCodecs |
-| `webm-muxer` | MIT | Pure TypeScript Matroska / WebM container muxer for WebCodecs |
+| `tauri` (v2) | MIT / Apache-2.0 | Runtime nativo de ventana de escritorio e IPC para Windows |
+| `tauri-build` (v2) | MIT / Apache-2.0 | Generación de recursos e iconos nativos de Windows (`.ico`) |
+| `serde` | MIT / Apache-2.0 | Serialización y deserialización de estructuras de proyecto |
+| `serde_json` | MIT / Apache-2.0 | Manejo de archivos `.amapa.json` en disco nativo |
 
-## Codec & Browser Media Processing Notice
+## 2. Dependencias de Interfaz y Multiplexación (`package.json`)
 
-AMAPA performs video and audio decoding, compositing, and encoding using standards-compliant Web APIs built into the user's browser:
-- **HTMLMediaElement / Canvas 2D / OffscreenCanvas**
-- **Web Audio API / OfflineAudioContext**
-- **WebCodecs API (`VideoEncoder`, `AudioEncoder`, `VideoFrame`, `AudioData`)** coupled with `mp4-muxer` and `webm-muxer` (MIT)
-- **MediaStream Recording API (`MediaRecorder`)** fallback
-- **Pure TypeScript WAV (RIFF PCM) encoder** for lossless audio exports
+| Paquete | Licencia | Propósito |
+| :--- | :--- | :--- |
+| `@tauri-apps/api` (v2) | MIT / Apache-2.0 | Puente IPC hacia los comandos nativos de Rust (`#[tauri::command]`) |
+| `react` / `react-dom` | MIT | Renderizado declarativo de componentes de interfaz |
+| `lucide-react` | ISC | Iconografía vectorial minimalista |
+| `mp4-muxer` | MIT | Multiplexor de contenedores ISO BMFF / MP4 |
+| `webm-muxer` | MIT | Multiplexor de contenedores Matroska / WebM |
 
-AMAPA does **not** bundle proprietary codec binaries or GPL-only non-redistributable encoders. Hardware and software codec implementations (such as H.264/AVC, VP8, VP9, AV1, AAC, and Opus) are provided by the host browser environment (`navigator.mediaCapabilities` / `VideoEncoder.isConfigSupported` / `MediaRecorder.isTypeSupported`).
+## 3. Aviso sobre Códecs Multimedia
+
+AMAPA utiliza el motor nativo en **Rust** (`sfx_engine.rs` y `audio_dsp.rs`) para síntesis y codificación WAV PCM de 16 bits, junto con aceleración por hardware del sistema operativo mediante WebView2 / WebCodecs (`VideoEncoder`, `AudioEncoder`) y `mp4-muxer` / `webm-muxer` (MIT). AMAPA **no** redistribuye binarios propietarios ni bibliotecas con licencia GPL restrictiva.

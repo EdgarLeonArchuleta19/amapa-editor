@@ -183,7 +183,7 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({
                 </label>
               </div>
               <p className="storage-note">
-                El almacenamiento local de tu navegador guarda tus proyectos de forma privada. Descarga un archivo <code>.amapa.json</code> para conservarlo permanentemente o compartirlo.
+                El motor nativo guarda tus proyectos localmente en tu equipo (o en la carpeta <code>AMAPA_Data</code> en modo portable). También puedes exportar un archivo <code>.amapa.json</code> para respaldarlo o compartirlo.
               </p>
             </div>
 
@@ -292,10 +292,10 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({
           </div>
 
           <div className="saved-projects-section">
-            <h3>Proyectos Guardados en Navegador (IndexedDB)</h3>
+            <h3>Proyectos Guardados en tu Equipo</h3>
             {savedList.length === 0 ? (
               <div className="empty-saved">
-                No hay proyectos guardados aún. Haz clic en <strong>Guardar</strong> en la barra superior para almacenar en este navegador.
+                No hay proyectos guardados aún. Haz clic en <strong>Guardar</strong> en la barra superior para almacenar en tu equipo.
               </div>
             ) : (
               <div className="saved-projects-list">

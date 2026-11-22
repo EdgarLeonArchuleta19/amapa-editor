@@ -8,6 +8,7 @@ import {
   deleteClip,
   deleteTrack,
   deserializeProject,
+  detachAudioFromClip,
   duplicateClip,
   findSnapTime,
   formatTimecode,
@@ -29,6 +30,7 @@ import {
   updateTrack,
 } from '../engine/timelineEngine';
 import { MediaAsset } from '../types/project';
+import { playheadBus } from '../engine/playheadBus';
 
 function makeSampleVideoAsset(id = 'media-v1', duration = 10): MediaAsset {
   return {
@@ -268,5 +270,45 @@ describe('Timeline Engine — Core Math & Editing Operations', () => {
     });
     expect(relinked.media[0].status).toBe('persisted');
     expect(relinked.media[0].objectUrl).toBe('blob:relinked-url');
+  });
+
+  it('detaches audio from a video clip, supports cross-track move, and broadcasts playheadBus updates', () => {
+    let proj = createDefaultProject('QA Project');
+    const videoAsset = makeSampleVideoAsset('v-qa', 10);
+    proj.media.push(videoAsset);
+    proj = addClipFromMedia(proj, videoAsset);
+    const videoClipId = proj.clips[0].id;
+
+    // Detach audio -> original video clip becomes muted, new audio clip is active
+    proj = detachAudioFromClip(proj, videoClipId);
+    expect(proj.clips).toHaveLength(2);
+    const vidClip = proj.clips.find((c) => c.kind === 'video')!;
+    const audClip = proj.clips.find((c) => c.kind === 'audio')!;
+    expect(vidClip.muted).toBe(true);
+    expect(audClip.muted).toBe(false);
+    expect(audClip.mediaId).toBe('v-qa');
+
+    // Only the detached audio clip is audible at t = 2s
+    const activeAudio = getActiveAudioClipsAtTime(proj, 2);
+    expect(activeAudio).toHaveLength(1);
+    expect(activeAudio[0].clip.id).toBe(audClip.id);
+
+    // Move video clip across to a second video track
+    proj = addTrack(proj, 'video', 'Video 2');
+    const video2Track = proj.tracks.find((t) => t.name === 'Video 2')!;
+    proj = moveClip(proj, vidClip.id, 1.5, video2Track.id);
+    const movedVid = proj.clips.find((c) => c.id === vidClip.id)!;
+    expect(movedVid.trackId).toBe(video2Track.id);
+    expect(movedVid.startTime).toBe(1.5);
+
+    // Imperative playheadBus emits sub-frame updates synchronously
+    let receivedTime = -1;
+    const unsub = playheadBus.subscribe((tSec) => {
+      receivedTime = tSec;
+    });
+    playheadBus.setTime(3.75);
+    expect(receivedTime).toBe(3.75);
+    expect(playheadBus.getTime()).toBe(3.75);
+    unsub();
   });
 });
