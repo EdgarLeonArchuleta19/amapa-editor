@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { formatTimecode } from '../engine/timelineEngine';
+import { playheadBus } from '../engine/playheadBus';
 
 interface CustomScrubberProps {
   value: number;
@@ -21,12 +22,24 @@ export const CustomScrubber: React.FC<CustomScrubberProps> = ({
   className = '',
 }) => {
   const trackRef = useRef<HTMLDivElement | null>(null);
+  const fillRef = useRef<HTMLDivElement | null>(null);
+  const thumbRef = useRef<HTMLDivElement | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [hoverInfo, setHoverInfo] = useState<{ x: number; time: number } | null>(null);
 
   const safeMax = Math.max(min + 0.001, max);
   const clampedValue = Math.max(min, Math.min(safeMax, value));
   const progressPercent = ((clampedValue - min) / (safeMax - min)) * 100;
+
+  // Imperative 60-120fps update via playheadBus without full React tree re-renders
+  useEffect(() => {
+    return playheadBus.subscribe((timeSec) => {
+      const clamped = Math.max(min, Math.min(safeMax, timeSec));
+      const pct = ((clamped - min) / (safeMax - min)) * 100;
+      if (fillRef.current) fillRef.current.style.width = `${pct}%`;
+      if (thumbRef.current) thumbRef.current.style.left = `${pct}%`;
+    });
+  }, [min, safeMax]);
 
   const calculateTimeFromClientX = useCallback(
     (clientX: number) => {
@@ -121,6 +134,7 @@ export const CustomScrubber: React.FC<CustomScrubberProps> = ({
       <div className="custom-scrubber-track">
         {/* Fill bar showing current played progress */}
         <div
+          ref={fillRef}
           className="custom-scrubber-fill"
           style={{ width: `${progressPercent}%` }}
         />
@@ -135,6 +149,7 @@ export const CustomScrubber: React.FC<CustomScrubberProps> = ({
 
         {/* Playhead thumb */}
         <div
+          ref={thumbRef}
           className="custom-scrubber-thumb"
           style={{ left: `${progressPercent}%` }}
         />

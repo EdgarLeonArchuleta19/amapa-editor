@@ -10,6 +10,7 @@ import {
   formatTimecode,
   getTimelineDuration,
 } from '../engine/timelineEngine';
+import { playheadBus } from '../engine/playheadBus';
 import { Locale, translate } from '../i18n/translations';
 import {
   Copy,
@@ -44,6 +45,8 @@ interface TimelinePanelProps {
   onMoveClip: (clipId: string, newStartTime: number, newTrackId?: string) => void;
   onTrimClipStart: (clipId: string, newStartTime: number) => void;
   onTrimClipEnd: (clipId: string, newDuration: number) => void;
+  onBeginDrag?: () => void;
+  onEndDrag?: () => void;
   onSplitSelectedClip: () => void;
   onDuplicateSelectedClip: () => void;
   onDeleteSelectedClip: () => void;
@@ -68,6 +71,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   onMoveClip,
   onTrimClipStart,
   onTrimClipEnd,
+  onBeginDrag,
+  onEndDrag,
   onSplitSelectedClip,
   onDuplicateSelectedClip,
   onDeleteSelectedClip,
@@ -86,7 +91,17 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   const [snapGuideTime, setSnapGuideTime] = useState<number | null>(null);
 
   const lanesContainerRef = useRef<HTMLDivElement | null>(null);
+  const playheadLineRef = useRef<HTMLDivElement | null>(null);
   const [containerWidth, setContainerWidth] = useState<number>(1200);
+
+  // Imperative 60-120fps playhead line movement without React re-renders
+  useEffect(() => {
+    return playheadBus.subscribe((timeSec) => {
+      if (playheadLineRef.current) {
+        playheadLineRef.current.style.left = `${timeSec * pixelsPerSecond}px`;
+      }
+    });
+  }, [pixelsPerSecond]);
 
   useEffect(() => {
     const el = lanesContainerRef.current;
@@ -157,7 +172,9 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
         setSnapGuideTime(null);
       }
 
-      onSeek(Number(candidateTime.toFixed(4)));
+      const rounded = Number(candidateTime.toFixed(4));
+      playheadBus.setTime(rounded);
+      onSeek(rounded);
     };
 
     updateTimeFromEvent(e.clientX);
@@ -183,6 +200,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   ) => {
     e.stopPropagation();
     onSelectClip(clip.id);
+    if (onBeginDrag) onBeginDrag();
 
     const startX = e.clientX;
     const initialStart = clip.startTime;
@@ -198,7 +216,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           const snapRes = findSnapTime(
             candidateStart,
             project.clips,
-            playheadTime,
+            playheadBus.getTime(),
             clip.id,
             10 / pixelsPerSecond
           );
@@ -209,7 +227,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             const endSnap = findSnapTime(
               candidateStart + initialDuration,
               project.clips,
-              playheadTime,
+              playheadBus.getTime(),
               clip.id,
               10 / pixelsPerSecond
             );
@@ -221,7 +239,20 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             }
           }
         }
-        onMoveClip(clip.id, candidateStart);
+
+        // Detect cross-track dragging under mouse cursor
+        let targetTrackId: string | undefined;
+        if (typeof document.elementFromPoint === 'function') {
+          const hoveredEl = document.elementFromPoint(
+            moveEvent.clientX,
+            moveEvent.clientY
+          );
+          const laneEl = hoveredEl?.closest('[data-track-id]');
+          const detectedId = laneEl?.getAttribute('data-track-id');
+          if (detectedId) targetTrackId = detectedId;
+        }
+
+        onMoveClip(clip.id, candidateStart, targetTrackId);
       } else if (mode === 'trim-start') {
         const candidateStart = Math.max(0, initialStart + deltaSec);
         onTrimClipStart(clip.id, candidateStart);
@@ -233,6 +264,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
 
     const handleMouseUp = () => {
       setSnapGuideTime(null);
+      if (onEndDrag) onEndDrag();
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
@@ -241,6 +273,17 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     window.addEventListener('mouseup', handleMouseUp);
   };
 
+  const hasSplittableClipAtPlayhead = useMemo(
+    () =>
+      Boolean(selectedClipId) ||
+      project.clips.some(
+        (c) =>
+          playheadTime > c.startTime + 0.1 &&
+          playheadTime < c.startTime + c.duration - 0.1
+      ),
+    [selectedClipId, project.clips, playheadTime]
+  );
+
   return (
     <section className="panel timeline-panel" aria-label="Timeline Editor">
       <div className="timeline-toolbar">
@@ -248,7 +291,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           <button
             type="button"
             className="toolbar-btn"
-            disabled={!selectedClipId}
+            disabled={!hasSplittableClipAtPlayhead}
             onClick={onSplitSelectedClip}
             title={`${t('timeline.split')} (S)`}
             data-testid="timeline-split-btn"
@@ -526,6 +569,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                 <div
                   key={track.id}
                   className={`track-lane ${!track.visible ? 'dimmed' : ''}`}
+                  data-track-id={track.id}
                   data-testid={`track-lane-${track.id}`}
                 >
                   {trackClips.length === 0 && project.clips.length === 0 && track.kind === 'video' && (
@@ -620,6 +664,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             )}
 
             <div
+              ref={playheadLineRef}
               className="playhead-line"
               style={{ left: `${playheadTime * pixelsPerSecond}px` }}
               data-testid="playhead-indicator"

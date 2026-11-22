@@ -1,5 +1,10 @@
 import { AmapaProject, MediaAsset } from '../types/project';
 import { deserializeProject, serializeProject } from '../engine/timelineEngine';
+import {
+  rustListSavedProjects,
+  rustLoadProject,
+  rustSaveProject,
+} from '../engine/tauriBridge';
 
 const DB_NAME = 'amapa_editor_db';
 const DB_VERSION = 1;
@@ -103,6 +108,16 @@ export async function saveProjectToStorage(
 
   memoryProjects.set(recordId, recordToStore);
 
+  // Save to native Rust disk storage when running in Tauri v2
+  await rustSaveProject({
+    id: recordId,
+    name: recordToStore.name,
+    updatedAt: recordToStore.updatedAt,
+    clipCount: recordToStore.clips.length,
+    projectJson: JSON.stringify(recordToStore),
+    isAutosave: Boolean(options?.isAutosave),
+  });
+
   const db = await openDatabase();
   if (!db) return;
 
@@ -184,6 +199,15 @@ export async function loadSavedProjectsList(): Promise<
     });
   }
 
+  // Merge projects stored on native disk via Tauri Rust engine
+  const diskList = await rustListSavedProjects();
+  if (diskList) {
+    for (const item of diskList) {
+      if (item.id === AUTOSAVE_ID) continue;
+      results.set(item.id, item);
+    }
+  }
+
   const db = await openDatabase();
   if (db) {
     await new Promise<void>((resolve) => {
@@ -225,6 +249,17 @@ export async function loadProjectById(
   projectId: string
 ): Promise<{ project: AmapaProject; blobs: Map<string, Blob> } | null> {
   let rawProject: AmapaProject | null = memoryProjects.get(projectId) || null;
+
+  if (!rawProject) {
+    const diskJson = await rustLoadProject(projectId, projectId === AUTOSAVE_ID);
+    if (diskJson) {
+      try {
+        rawProject = JSON.parse(diskJson) as AmapaProject;
+      } catch {
+        rawProject = null;
+      }
+    }
+  }
 
   if (!rawProject) {
     const db = await openDatabase();

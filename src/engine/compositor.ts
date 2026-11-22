@@ -289,7 +289,9 @@ export function renderCompositeFrame(
   const activeClips = getActiveVisualClipsAtTime(project, timelineTime);
   const fitMode = project.settings.fitMode || 'fit';
   for (const clip of activeClips) {
-    const source = clip.mediaId ? sourcesByMediaId.get(clip.mediaId) : undefined;
+    const source =
+      sourcesByMediaId.get(clip.id) ||
+      (clip.mediaId ? sourcesByMediaId.get(clip.mediaId) : undefined);
     renderClipToCanvasContext(
       ctx,
       clip,

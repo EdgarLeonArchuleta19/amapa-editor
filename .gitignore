@@ -6,6 +6,9 @@ node_modules/
 # Production build artifacts
 dist/
 dist-ssr/
+src-tauri/target/
+src-tauri/gen/
+release/
 *.local
 
 # TypeScript

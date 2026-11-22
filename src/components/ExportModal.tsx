@@ -16,10 +16,12 @@ import {
   validateExportSettings,
 } from '../engine/exportEngine';
 import { Locale, translate } from '../i18n/translations';
+import { rustRevealInExplorer, rustSaveExportedFile } from '../engine/tauriBridge';
 import {
   AlertCircle,
   Check,
   Download,
+  FolderOpen,
   Loader2,
   X,
 } from 'lucide-react';
@@ -49,6 +51,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [exportResult, setExportResult] = useState<ExportResult | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [nativeSavedPath, setNativeSavedPath] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -109,6 +112,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const handleStartExport = async () => {
     setExportError(null);
     setExportResult(null);
+    setNativeSavedPath(null);
     if (downloadUrl) {
       URL.revokeObjectURL(downloadUrl);
       setDownloadUrl(null);
@@ -128,6 +132,11 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       const url = URL.createObjectURL(result.blob);
       setDownloadUrl(url);
       setExportResult(result);
+
+      const diskPath = await rustSaveExportedFile(result.filename, result.blob);
+      if (diskPath) {
+        setNativeSavedPath(diskPath);
+      }
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         setExportError(locale === 'es' ? 'Exportación cancelada.' : 'Export cancelled.');
@@ -467,9 +476,24 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                 <div>
                   <strong>{exportResult.filename}</strong> (
                   {(exportResult.sizeBytes / 1024).toFixed(1)} KB)
+                  {nativeSavedPath && (
+                    <div style={{ fontSize: '11px', opacity: 0.8, marginTop: '2px' }}>
+                      Guardado en: <code>{nativeSavedPath}</code>
+                    </div>
+                  )}
                 </div>
               </div>
-              <div className="result-actions">
+              <div className="result-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                {nativeSavedPath && (
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={() => rustRevealInExplorer(nativeSavedPath)}
+                  >
+                    <FolderOpen size={14} strokeWidth={1.5} />
+                    <span>{locale === 'es' ? 'Ver en Explorador' : 'Show in Explorer'}</span>
+                  </button>
+                )}
                 <a
                   href={downloadUrl}
                   download={exportResult.filename}

@@ -1,6 +1,7 @@
 import { MediaAsset, MediaKind } from '../types/project';
 import { encodePCMToWavBlob } from './exportEngine';
 import { generateId } from './timelineEngine';
+import { rustComputeWaveformPeaks } from './tauriBridge';
 
 const SUPPORTED_VIDEO_MIMES = new Set([
   'video/mp4',
@@ -82,12 +83,18 @@ export async function extractAudioWaveformPeaks(
       const ab = await file.arrayBuffer();
       const audioBuffer = await ctx.decodeAudioData(ab.slice(0));
       const rawData = audioBuffer.getChannelData(0);
+      const rustPeaks = await rustComputeWaveformPeaks(rawData, numBuckets);
+      if (rustPeaks && rustPeaks.length === numBuckets) {
+        return rustPeaks;
+      }
+
       const blockSize = Math.max(1, Math.floor(rawData.length / numBuckets));
+      const step = Math.max(1, Math.floor(blockSize / 256));
       const peaks: number[] = [];
       for (let i = 0; i < numBuckets; i++) {
         let sum = 0;
         const start = i * blockSize;
-        for (let j = 0; j < blockSize && start + j < rawData.length; j++) {
+        for (let j = 0; j < blockSize && start + j < rawData.length; j += step) {
           const val = Math.abs(rawData[start + j]);
           if (val > sum) sum = val;
         }

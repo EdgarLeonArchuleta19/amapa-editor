@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AmapaProject } from '../types/project';
 import {
   formatTimecode,
@@ -6,6 +6,8 @@ import {
   getTimelineDuration,
 } from '../engine/timelineEngine';
 import { renderCompositeFrame, VisualSourceElement } from '../engine/compositor';
+import { playheadBus } from '../engine/playheadBus';
+import { rustRevealInExplorer, rustSaveExportedFile } from '../engine/tauriBridge';
 import { Locale, translate } from '../i18n/translations';
 import { CustomScrubber } from './CustomScrubber';
 import {
@@ -40,6 +42,9 @@ export const PreviewPlayer: React.FC<PreviewPlayerProps> = ({
 }) => {
   const t = (key: string) => translate(locale, key);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const timecodeStrongRef = useRef<HTMLElement | null>(null);
+
+  // Per-clip media element pools so split clips, PiP clips, and detached audio clips never conflict
   const visualPoolRef = useRef<Map<string, VisualSourceElement>>(new Map());
   const audioPoolRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
@@ -51,148 +56,239 @@ export const PreviewPlayer: React.FC<PreviewPlayerProps> = ({
   const canvasWidth = Math.max(160, Math.round(project.settings.width * previewScale));
   const canvasHeight = Math.max(90, Math.round(project.settings.height * previewScale));
 
-  // Keep media element pool synchronized with project.media
-  useEffect(() => {
-    const visualPool = visualPoolRef.current;
-    const audioPool = audioPoolRef.current;
-    const activeIds = new Set(project.media.map((m) => m.id));
+  const projectRef = useRef(project);
+  projectRef.current = project;
+  const isPlayingRef = useRef(isPlaying);
+  isPlayingRef.current = isPlaying;
+  const playbackRateRef = useRef(playbackRate);
+  playbackRateRef.current = playbackRate;
+  const canvasSizeRef = useRef({ width: canvasWidth, height: canvasHeight });
+  canvasSizeRef.current = { width: canvasWidth, height: canvasHeight };
 
-    for (const [id, el] of visualPool.entries()) {
-      if (!activeIds.has(id)) {
-        if ('pause' in el && typeof el.pause === 'function') {
-          el.pause();
-        }
-        visualPool.delete(id);
-      }
-    }
-    for (const [id, el] of audioPool.entries()) {
-      if (!activeIds.has(id)) {
-        el.pause();
-        audioPool.delete(id);
-      }
-    }
-
-    for (const asset of project.media) {
-      if (!asset.objectUrl || asset.status === 'missing') continue;
-
-      if (asset.kind === 'video' && !visualPool.has(asset.id)) {
-        const v = document.createElement('video');
-        v.src = asset.objectUrl;
-        v.playsInline = true;
-        v.preload = 'auto';
-        v.onerror = () => {
-          setDecodeWarning(`Browser could not decode video "${asset.name}".`);
-        };
-        visualPool.set(asset.id, v);
-      } else if (asset.kind === 'image' && !visualPool.has(asset.id)) {
-        const img = new Image();
-        img.src = asset.objectUrl;
-        visualPool.set(asset.id, img);
-      } else if (asset.kind === 'audio' && !audioPool.has(asset.id)) {
-        const a = document.createElement('audio');
-        a.src = asset.objectUrl;
-        a.preload = 'auto';
-        audioPool.set(asset.id, a);
-      }
-    }
-  }, [project.media]);
-
-  // Synchronize media elements & draw composite frame whenever playheadTime or project changes
-  useEffect(() => {
+  const redrawCanvasOnly = useCallback((timeSec: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    renderCompositeFrame(
+      ctx,
+      projectRef.current,
+      timeSec,
+      canvasSizeRef.current.width,
+      canvasSizeRef.current.height,
+      visualPoolRef.current
+    );
+  }, []);
 
-    const visualPool = visualPoolRef.current;
-    const audioPool = audioPoolRef.current;
+  const syncMediaAndRender = useCallback(
+    (timeSec: number, playing: boolean) => {
+      const currentProject = projectRef.current;
+      const rate = playbackRateRef.current;
+      const visualPool = visualPoolRef.current;
+      const audioPool = audioPoolRef.current;
 
-    // Sync video clip positions
-    for (const clip of project.clips) {
-      if (clip.kind === 'video' && clip.mediaId) {
-        const videoEl = visualPool.get(clip.mediaId) as HTMLVideoElement | undefined;
-        if (!videoEl || !('currentTime' in videoEl)) continue;
-
-        const isActive =
-          playheadTime >= clip.startTime && playheadTime < clip.startTime + clip.duration;
-        if (isActive) {
-          const targetSourceTime =
-            clip.sourceStart + (playheadTime - clip.startTime) * clip.playbackSpeed;
-          if (Math.abs(videoEl.currentTime - targetSourceTime) > 0.18) {
-            try {
-              videoEl.currentTime = targetSourceTime;
-            } catch {
-              // Ignore seek while metadata still loading
-            }
-          }
-          videoEl.playbackRate = Math.min(4, Math.max(0.25, clip.playbackSpeed * playbackRate));
-          if (isPlaying && videoEl.paused) {
-            videoEl.play().catch(() => {});
-          } else if (!isPlaying && !videoEl.paused) {
-            videoEl.pause();
-          }
-        } else if (!videoEl.paused) {
-          videoEl.pause();
-        }
-      }
-    }
-
-    // Sync audio gains & playback
-    const activeAudio = getActiveAudioClipsAtTime(project, playheadTime);
-    const activeAudioMediaIds = new Map<string, { gain: number; targetTime: number; speed: number }>();
-    for (const { clip, effectiveGain } of activeAudio) {
-      if (clip.mediaId) {
+      // 1. Compute active audio gains (covers both audio clips and unmuted video clips)
+      const activeAudio = getActiveAudioClipsAtTime(currentProject, timeSec);
+      const activeAudioByClipId = new Map<
+        string,
+        { gain: number; targetTime: number; speed: number }
+      >();
+      for (const { clip, effectiveGain } of activeAudio) {
         const targetTime =
-          clip.sourceStart + (playheadTime - clip.startTime) * clip.playbackSpeed;
-        activeAudioMediaIds.set(clip.mediaId, {
+          clip.sourceStart + (timeSec - clip.startTime) * clip.playbackSpeed;
+        activeAudioByClipId.set(clip.id, {
           gain: Math.min(1, Math.max(0, effectiveGain)),
           targetTime,
           speed: clip.playbackSpeed,
         });
       }
-    }
 
-    for (const [mediaId, videoEl] of visualPool.entries()) {
-      if ('volume' in videoEl) {
-        const info = activeAudioMediaIds.get(mediaId);
-        videoEl.muted = !info || info.gain <= 0;
-        if (info) {
-          videoEl.volume = Math.min(1, Math.max(0, info.gain));
-        }
-      }
-    }
+      // 2. Sync video clip elements (pooled per clip.id)
+      for (const clip of currentProject.clips) {
+        if (clip.kind === 'video' && clip.mediaId) {
+          const videoEl = visualPool.get(clip.id) as HTMLVideoElement | undefined;
+          if (!videoEl || !('currentTime' in videoEl)) continue;
 
-    for (const [mediaId, audioEl] of audioPool.entries()) {
-      const info = activeAudioMediaIds.get(mediaId);
-      if (info && isPlaying) {
-        audioEl.volume = Math.min(1, Math.max(0, info.gain));
-        audioEl.playbackRate = Math.min(4, Math.max(0.25, info.speed * playbackRate));
-        if (Math.abs(audioEl.currentTime - info.targetTime) > 0.2) {
-          try {
-            audioEl.currentTime = info.targetTime;
-          } catch {
-            // Ignore seek before metadata ready
+          const isActive =
+            timeSec >= clip.startTime && timeSec < clip.startTime + clip.duration;
+          const audioInfo = activeAudioByClipId.get(clip.id);
+
+          if (isActive) {
+            const targetSourceTime =
+              clip.sourceStart + (timeSec - clip.startTime) * clip.playbackSpeed;
+            const driftThreshold = playing ? 0.24 : 0.03;
+
+            if (Math.abs(videoEl.currentTime - targetSourceTime) > driftThreshold) {
+              try {
+                videoEl.currentTime = targetSourceTime;
+              } catch {
+                // Metadata still loading
+              }
+            }
+
+            videoEl.playbackRate = Math.min(
+              4,
+              Math.max(0.25, clip.playbackSpeed * rate)
+            );
+            videoEl.muted = !playing || !audioInfo || audioInfo.gain <= 0;
+            if (audioInfo) {
+              videoEl.volume = Math.min(1, Math.max(0, audioInfo.gain));
+            }
+
+            if (playing && videoEl.paused) {
+              videoEl.play().catch(() => {});
+            } else if (!playing && !videoEl.paused) {
+              videoEl.pause();
+            }
+          } else {
+            if (!videoEl.paused) videoEl.pause();
+            videoEl.muted = true;
           }
         }
-        if (audioEl.paused) {
-          audioEl.play().catch(() => {});
+      }
+
+      // 3. Sync standalone & detached audio clip elements (pooled per clip.id)
+      for (const clip of currentProject.clips) {
+        if (clip.kind === 'audio' && clip.mediaId) {
+          const audioEl = audioPool.get(clip.id);
+          if (!audioEl) continue;
+
+          const audioInfo = activeAudioByClipId.get(clip.id);
+          if (audioInfo && playing) {
+            audioEl.volume = Math.min(1, Math.max(0, audioInfo.gain));
+            audioEl.playbackRate = Math.min(
+              4,
+              Math.max(0.25, audioInfo.speed * rate)
+            );
+            if (Math.abs(audioEl.currentTime - audioInfo.targetTime) > 0.22) {
+              try {
+                audioEl.currentTime = audioInfo.targetTime;
+              } catch {
+                // Metadata still loading
+              }
+            }
+            if (audioEl.paused) {
+              audioEl.play().catch(() => {});
+            }
+          } else if (!audioEl.paused) {
+            audioEl.pause();
+          }
         }
-      } else if (!audioEl.paused) {
-        audioEl.pause();
+      }
+
+      // 4. Composite visual frame onto Canvas 2D
+      redrawCanvasOnly(timeSec);
+    },
+    [redrawCanvasOnly]
+  );
+
+  // Synchronize per-clip media element pools whenever project.media or project.clips change
+  useEffect(() => {
+    const visualPool = visualPoolRef.current;
+    const audioPool = audioPoolRef.current;
+
+    const mediaMap = new Map<string, (typeof project.media)[number]>();
+    for (const m of project.media) {
+      if (m.objectUrl && m.status !== 'missing') {
+        mediaMap.set(m.id, m);
       }
     }
 
-    renderCompositeFrame(
-      ctx,
-      project,
-      playheadTime,
-      canvasWidth,
-      canvasHeight,
-      visualPool
-    );
-  }, [project, playheadTime, isPlaying, canvasWidth, canvasHeight, playbackRate]);
+    const activeVisualKeys = new Set<string>();
+    const activeAudioKeys = new Set<string>();
 
-  // Playback animation loop
+    // Ensure image assets are loaded by asset.id
+    for (const asset of mediaMap.values()) {
+      if (asset.kind === 'image') {
+        activeVisualKeys.add(asset.id);
+        if (!visualPool.has(asset.id)) {
+          const img = new Image();
+          img.onload = () => redrawCanvasOnly(playheadBus.getTime());
+          img.src = asset.objectUrl!;
+          visualPool.set(asset.id, img);
+        }
+      }
+    }
+
+    // Ensure each video clip has its own HTMLVideoElement, and each audio clip has its own HTMLAudioElement
+    for (const clip of project.clips) {
+      if (!clip.mediaId) continue;
+      const asset = mediaMap.get(clip.mediaId);
+      if (!asset || !asset.objectUrl) continue;
+
+      if (clip.kind === 'video') {
+        activeVisualKeys.add(clip.id);
+        const existing = visualPool.get(clip.id) as HTMLVideoElement | undefined;
+        if (!existing || existing.src !== asset.objectUrl) {
+          if (existing && 'pause' in existing) existing.pause();
+          const v = document.createElement('video');
+          v.src = asset.objectUrl;
+          v.playsInline = true;
+          v.preload = 'auto';
+          v.onloadeddata = () => {
+            if (!isPlayingRef.current) redrawCanvasOnly(playheadBus.getTime());
+          };
+          v.onseeked = () => {
+            if (!isPlayingRef.current) redrawCanvasOnly(playheadBus.getTime());
+          };
+          v.onerror = () => {
+            setDecodeWarning(`No se pudo decodificar el video "${asset.name}".`);
+          };
+          visualPool.set(clip.id, v);
+        }
+      } else if (clip.kind === 'audio') {
+        // Supports both native audio files AND detached audio from video files!
+        activeAudioKeys.add(clip.id);
+        const existing = audioPool.get(clip.id);
+        if (!existing || existing.src !== asset.objectUrl) {
+          if (existing) existing.pause();
+          const a = document.createElement('audio');
+          a.src = asset.objectUrl;
+          a.preload = 'auto';
+          audioPool.set(clip.id, a);
+        }
+      }
+    }
+
+    // Cleanup removed clips/assets
+    for (const [key, el] of visualPool.entries()) {
+      if (!activeVisualKeys.has(key)) {
+        if ('pause' in el && typeof el.pause === 'function') el.pause();
+        visualPool.delete(key);
+      }
+    }
+    for (const [key, el] of audioPool.entries()) {
+      if (!activeAudioKeys.has(key)) {
+        el.pause();
+        audioPool.delete(key);
+      }
+    }
+
+    // Immediately render current frame after pool update
+    syncMediaAndRender(playheadBus.getTime(), isPlayingRef.current);
+  }, [project.media, project.clips, redrawCanvasOnly, syncMediaAndRender]);
+
+  // Sync when playheadTime or project visual properties change while paused or via external seek
+  useEffect(() => {
+    playheadBus.setTime(playheadTime);
+    if (timecodeStrongRef.current) {
+      timecodeStrongRef.current.textContent = formatTimecode(
+        playheadTime,
+        project.settings.fps
+      );
+    }
+    syncMediaAndRender(playheadTime, isPlaying);
+  }, [
+    project,
+    playheadTime,
+    isPlaying,
+    canvasWidth,
+    canvasHeight,
+    playbackRate,
+    syncMediaAndRender,
+  ]);
+
+  // High-frequency 60-120 FPS playback loop (decoupled from full React tree re-renders!)
   useEffect(() => {
     if (!isPlaying) return;
     if (totalDuration <= 0) {
@@ -202,26 +298,53 @@ export const PreviewPlayer: React.FC<PreviewPlayerProps> = ({
 
     let rafId = 0;
     let lastTimestamp = performance.now();
-    let currentPlayhead = playheadTime >= totalDuration ? 0 : playheadTime;
+    let lastReactSyncTimestamp = lastTimestamp;
+    let currentPlayhead =
+      playheadBus.getTime() >= totalDuration ? 0 : playheadBus.getTime();
 
     const tick = (now: number) => {
-      const dtSec = ((now - lastTimestamp) / 1000) * playbackRate;
+      const dtSec = ((now - lastTimestamp) / 1000) * playbackRateRef.current;
       lastTimestamp = now;
       currentPlayhead += dtSec;
 
       if (currentPlayhead >= totalDuration) {
+        playheadBus.setTime(totalDuration);
+        syncMediaAndRender(totalDuration, false);
         onSeek(totalDuration);
         onStopPlayback();
         return;
       }
 
-      onSeek(currentPlayhead);
+      // 1. Emit to imperative subscribers (Timeline playhead line, CustomScrubber) at 60-120 FPS
+      playheadBus.setTime(currentPlayhead);
+
+      // 2. Update timecode readout directly in the DOM
+      if (timecodeStrongRef.current) {
+        timecodeStrongRef.current.textContent = formatTimecode(
+          currentPlayhead,
+          projectRef.current.settings.fps
+        );
+      }
+
+      // 3. Draw composite frame directly to Canvas 2D
+      syncMediaAndRender(currentPlayhead, true);
+
+      // 4. Sync React state at a calm 4 Hz so React UI never lags during playback
+      if (now - lastReactSyncTimestamp >= 250) {
+        lastReactSyncTimestamp = now;
+        onSeek(Number(currentPlayhead.toFixed(4)));
+      }
+
       rafId = requestAnimationFrame(tick);
     };
 
     rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
-  }, [isPlaying, totalDuration, playbackRate]);
+    return () => {
+      cancelAnimationFrame(rafId);
+      // Sync exact stop position back to React state when pausing
+      onSeek(Number(playheadBus.getTime().toFixed(4)));
+    };
+  }, [isPlaying, totalDuration, onSeek, onStopPlayback, syncMediaAndRender]);
 
   const missingClipAtPlayhead = useMemo(() => {
     const missingIds = new Set(
@@ -238,19 +361,35 @@ export const PreviewPlayer: React.FC<PreviewPlayerProps> = ({
 
   const stepFrame = (direction: -1 | 1) => {
     const frameDur = 1 / (project.settings.fps || 30);
-    const next = Math.max(0, Math.min(totalDuration, playheadTime + direction * frameDur));
-    onSeek(Number(next.toFixed(4)));
+    const current = playheadBus.getTime();
+    const next = Math.max(0, Math.min(totalDuration, current + direction * frameDur));
+    const rounded = Number(next.toFixed(4));
+    playheadBus.setTime(rounded);
+    onSeek(rounded);
   };
 
-  const handleCaptureSnapshot = () => {
+  const handleCaptureSnapshot = async () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     try {
+      const cleanTime = playheadBus.getTime().toFixed(2).replace('.', '_');
+      const filename = `${(project.name || 'amapa').replace(/\s+/g, '_')}_snapshot_${cleanTime}s.png`;
+
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob((b) => resolve(b), 'image/png')
+      );
+      if (blob) {
+        const savedPath = await rustSaveExportedFile(filename, blob);
+        if (savedPath) {
+          await rustRevealInExplorer(savedPath);
+          return;
+        }
+      }
+
       const dataUrl = canvas.toDataURL('image/png');
       const a = document.createElement('a');
       a.href = dataUrl;
-      const cleanTime = playheadTime.toFixed(2).replace('.', '_');
-      a.download = `${(project.name || 'amapa').replace(/\s+/g, '_')}_snapshot_${cleanTime}s.png`;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -275,8 +414,9 @@ export const PreviewPlayer: React.FC<PreviewPlayerProps> = ({
             <div className="preview-warning-overlay" role="status">
               <AlertTriangle size={16} />
               <span>
-                Active clip at playhead references a missing source file. Relink it in the Media
-                Library.
+                {locale === 'es'
+                  ? 'El clip en el cabezal hace referencia a un archivo faltante. Revincúlalo en la biblioteca.'
+                  : 'Active clip at playhead references a missing source file. Relink it in the Media Library.'}
               </span>
             </div>
           )}
@@ -296,7 +436,10 @@ export const PreviewPlayer: React.FC<PreviewPlayerProps> = ({
           min={0}
           max={Math.max(0.1, totalDuration)}
           fps={project.settings.fps}
-          onChange={onSeek}
+          onChange={(tSec) => {
+            playheadBus.setTime(tSec);
+            onSeek(tSec);
+          }}
           ariaLabel="Timeline playhead scrubber"
         />
       </div>
@@ -305,7 +448,9 @@ export const PreviewPlayer: React.FC<PreviewPlayerProps> = ({
         {/* Left: Timecode readout */}
         <div className="transport-left">
           <span className="timecode-readout" data-testid="timecode-display">
-            <strong>{formatTimecode(playheadTime, project.settings.fps)}</strong>
+            <strong ref={timecodeStrongRef}>
+              {formatTimecode(playheadTime, project.settings.fps)}
+            </strong>
             <span className="timecode-sep"> / </span>
             <span>{formatTimecode(totalDuration, project.settings.fps)}</span>
           </span>
@@ -316,7 +461,10 @@ export const PreviewPlayer: React.FC<PreviewPlayerProps> = ({
           <button
             type="button"
             className="icon-btn"
-            onClick={() => onSeek(0)}
+            onClick={() => {
+              playheadBus.setTime(0);
+              onSeek(0);
+            }}
             title={locale === 'es' ? 'Ir al inicio (Home)' : 'Jump to start (Home)'}
             aria-label={locale === 'es' ? 'Ir al inicio' : 'Jump to start'}
           >
@@ -357,7 +505,10 @@ export const PreviewPlayer: React.FC<PreviewPlayerProps> = ({
           <button
             type="button"
             className="icon-btn"
-            onClick={() => onSeek(totalDuration)}
+            onClick={() => {
+              playheadBus.setTime(totalDuration);
+              onSeek(totalDuration);
+            }}
             title={locale === 'es' ? 'Ir al final (End)' : 'Jump to end (End)'}
             aria-label={locale === 'es' ? 'Ir al final' : 'Jump to end'}
           >
@@ -371,7 +522,11 @@ export const PreviewPlayer: React.FC<PreviewPlayerProps> = ({
             type="button"
             className="icon-btn"
             onClick={handleCaptureSnapshot}
-            title={locale === 'es' ? 'Capturar fotograma actual (PNG)' : 'Capture current frame (PNG)'}
+            title={
+              locale === 'es'
+                ? 'Capturar fotograma actual (PNG)'
+                : 'Capture current frame (PNG)'
+            }
             aria-label="Capture snapshot"
           >
             <Camera size={15} />

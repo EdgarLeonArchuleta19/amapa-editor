@@ -40,6 +40,7 @@ import {
   updateTrack,
 } from './engine/timelineEngine';
 import { analyzeMediaFile } from './engine/mediaAnalyzer';
+import { playheadBus } from './engine/playheadBus';
 import {
   loadAutosavedProject,
   loadProjectById,
@@ -112,9 +113,47 @@ export const App: React.FC = () => {
   const [showProjectsModal, setShowProjectsModal] = useState<boolean>(false);
   const [mobileTab, setMobileTab] = useState<'editor' | 'media' | 'properties'>('editor');
 
+  const dragStartProjectRef = useRef<AmapaProject | null>(null);
+
   const commitProject = useCallback((nextProject: AmapaProject) => {
     setHistory((prev) => pushHistory(prev, nextProject));
   }, []);
+
+  const handleBeginDrag = useCallback(() => {
+    dragStartProjectRef.current = history.present;
+  }, [history.present]);
+
+  const handleEndDrag = useCallback(() => {
+    const startSnap = dragStartProjectRef.current;
+    dragStartProjectRef.current = null;
+    if (!startSnap) return;
+    setHistory((prev) => {
+      if (prev.present === startSnap) return prev;
+      const nextPast = [...prev.past, startSnap];
+      if (nextPast.length > 50) nextPast.shift();
+      return {
+        past: nextPast,
+        present: prev.present,
+        future: [],
+      };
+    });
+  }, []);
+
+  const applyDragOrCommit = useCallback(
+    (computeNext: (baseProject: AmapaProject) => AmapaProject) => {
+      if (dragStartProjectRef.current) {
+        const base = dragStartProjectRef.current;
+        const next = computeNext(base);
+        setHistory((prev) => ({
+          ...prev,
+          present: next,
+        }));
+      } else {
+        setHistory((prev) => pushHistory(prev, computeNext(prev.present)));
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -252,11 +291,31 @@ export const App: React.FC = () => {
   }, []);
 
   const handleSplitSelectedClip = useCallback(() => {
-    if (!selectedClipId) return;
-    setHistory((prev) =>
-      pushHistory(prev, splitClipAtTime(prev.present, selectedClipId, playheadTime))
-    );
-  }, [selectedClipId, playheadTime]);
+    const activeTime = isPlaying ? playheadBus.getTime() : playheadTime;
+    setHistory((prev) => {
+      let targetClipId = selectedClipId;
+      const selected = prev.present.clips.find((c) => c.id === targetClipId);
+      const isSelectedAtPlayhead =
+        selected &&
+        activeTime > selected.startTime + 0.1 &&
+        activeTime < selected.startTime + selected.duration - 0.1;
+
+      if (!isSelectedAtPlayhead) {
+        const autoCandidate = prev.present.clips.find(
+          (c) =>
+            activeTime > c.startTime + 0.1 &&
+            activeTime < c.startTime + c.duration - 0.1
+        );
+        if (autoCandidate) {
+          targetClipId = autoCandidate.id;
+          setSelectedClipId(autoCandidate.id);
+        }
+      }
+
+      if (!targetClipId) return prev;
+      return pushHistory(prev, splitClipAtTime(prev.present, targetClipId, activeTime));
+    });
+  }, [selectedClipId, playheadTime, isPlaying]);
 
   const handleDuplicateSelectedClip = useCallback(() => {
     if (!selectedClipId) return;
@@ -495,15 +554,20 @@ export const App: React.FC = () => {
           snapEnabled={snapEnabled}
           locale={locale}
           onSelectClip={setSelectedClipId}
-          onSeek={setPlayheadTime}
+          onSeek={(t) => {
+            playheadBus.setTime(t);
+            setPlayheadTime(t);
+          }}
+          onBeginDrag={handleBeginDrag}
+          onEndDrag={handleEndDrag}
           onMoveClip={(clipId, newStart, newTrackId) =>
-            commitProject(moveClip(project, clipId, newStart, newTrackId))
+            applyDragOrCommit((base) => moveClip(base, clipId, newStart, newTrackId))
           }
           onTrimClipStart={(clipId, newStart) =>
-            commitProject(trimClipStart(project, clipId, newStart))
+            applyDragOrCommit((base) => trimClipStart(base, clipId, newStart))
           }
           onTrimClipEnd={(clipId, newDuration) =>
-            commitProject(trimClipEnd(project, clipId, newDuration))
+            applyDragOrCommit((base) => trimClipEnd(base, clipId, newDuration))
           }
           onSplitSelectedClip={handleSplitSelectedClip}
           onDuplicateSelectedClip={handleDuplicateSelectedClip}

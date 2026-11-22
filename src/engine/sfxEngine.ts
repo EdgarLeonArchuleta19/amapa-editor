@@ -1,3 +1,5 @@
+import { rustSynthesizeSfx } from './tauriBridge';
+
 export interface SfxPreset {
   id: string;
   name: string;
@@ -213,6 +215,11 @@ export async function synthesizeSfxBuffer(presetId: string): Promise<AudioBuffer
 
 export async function generateSfxFile(presetId: string): Promise<File> {
   const preset = SFX_PRESETS.find((p) => p.id === presetId) || SFX_PRESETS[0];
+  const rustWav = await rustSynthesizeSfx(presetId);
+  if (rustWav && rustWav.byteLength > 44) {
+    const blob = new Blob([rustWav.buffer as ArrayBuffer], { type: 'audio/wav' });
+    return new File([blob], `${preset.name}.wav`, { type: 'audio/wav' });
+  }
   const buffer = await synthesizeSfxBuffer(presetId);
   const blob = audioBufferToWavBlob(buffer);
   return new File([blob], `${preset.name}.wav`, { type: 'audio/wav' });
@@ -231,6 +238,18 @@ export async function previewSfxSound(presetId: string): Promise<void> {
     }
     if (previewAudioCtx.state === 'suspended') {
       await previewAudioCtx.resume();
+    }
+
+    const rustWav = await rustSynthesizeSfx(presetId);
+    if (rustWav && rustWav.byteLength > 44) {
+      const decoded = await previewAudioCtx.decodeAudioData(
+        rustWav.buffer.slice(0) as ArrayBuffer
+      );
+      const source = previewAudioCtx.createBufferSource();
+      source.buffer = decoded;
+      source.connect(previewAudioCtx.destination);
+      source.start(0);
+      return;
     }
 
     const buffer = await synthesizeSfxBuffer(presetId);

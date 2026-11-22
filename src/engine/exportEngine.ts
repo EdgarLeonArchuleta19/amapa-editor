@@ -615,6 +615,7 @@ export async function exportTimelineToBlob(
         canvas,
         ctx,
         sources,
+        audioChannels,
         signal: options?.signal,
         report,
       });
@@ -634,6 +635,7 @@ export async function exportTimelineToBlob(
       canvas,
       ctx,
       sources,
+      audioChannels,
       signal: options?.signal,
       report,
     });
@@ -655,6 +657,7 @@ interface InternalRenderParams {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
   sources: Map<string, VisualSourceElement>;
+  audioChannels: Float32Array[];
   signal?: AbortSignal;
   report: (u: Partial<ExportProgressUpdate>) => void;
 }
@@ -699,6 +702,7 @@ async function renderWithWebCodecsMuxer(
     totalFrames,
     filename,
     canvas,
+    audioChannels,
     signal,
     report,
   } = params;
@@ -706,6 +710,49 @@ async function renderWithWebCodecsMuxer(
   const isMp4 = settings.container === 'mp4';
   const mp4Target = isMp4 ? new Mp4BufferTarget() : null;
   const webmTarget = !isMp4 ? new WebmBufferTarget() : null;
+
+  // Check if timeline has non-silent audio and AudioEncoder is supported
+  const hasNonSilentAudio =
+    audioChannels.length > 0 &&
+    audioChannels.some((ch) => {
+      for (let i = 0; i < ch.length; i += 64) {
+        if (Math.abs(ch[i]) > 1e-4) return true;
+      }
+      return false;
+    });
+
+  let activeAudioCodec: 'opus' | 'aac' | null = null;
+  let webCodecsAudioCodecStr = '';
+  if (
+    hasNonSilentAudio &&
+    typeof globalThis.AudioEncoder !== 'undefined' &&
+    typeof globalThis.AudioData !== 'undefined'
+  ) {
+    const candidates: Array<{ wc: string; mux: 'opus' | 'aac' }> = isMp4
+      ? [
+          { wc: 'mp4a.40.2', mux: 'aac' },
+          { wc: 'opus', mux: 'opus' },
+        ]
+      : [{ wc: 'opus', mux: 'opus' }];
+
+    for (const cand of candidates) {
+      try {
+        const res = await globalThis.AudioEncoder.isConfigSupported({
+          codec: cand.wc,
+          sampleRate: settings.sampleRate,
+          numberOfChannels: audioChannels.length,
+          bitrate: settings.audioBitrateKbps * 1000,
+        });
+        if (res?.supported) {
+          activeAudioCodec = cand.mux;
+          webCodecsAudioCodecStr = cand.wc;
+          break;
+        }
+      } catch {
+        // Try next candidate
+      }
+    }
+  }
 
   const mp4Muxer = isMp4
     ? new Mp4Muxer({
@@ -715,6 +762,15 @@ async function renderWithWebCodecsMuxer(
           width,
           height,
         },
+        ...(activeAudioCodec
+          ? {
+              audio: {
+                codec: activeAudioCodec,
+                numberOfChannels: audioChannels.length,
+                sampleRate: settings.sampleRate,
+              },
+            }
+          : {}),
         fastStart: 'in-memory',
       })
     : null;
@@ -732,8 +788,61 @@ async function renderWithWebCodecsMuxer(
           height,
           frameRate: fps,
         },
+        ...(activeAudioCodec
+          ? {
+              audio: {
+                codec: 'A_OPUS',
+                numberOfChannels: audioChannels.length,
+                sampleRate: settings.sampleRate,
+              },
+            }
+          : {}),
       })
     : null;
+
+  // Encode mixed audio track if supported
+  if (activeAudioCodec && webCodecsAudioCodecStr) {
+    try {
+      const audioEncoder = new globalThis.AudioEncoder({
+        output: (chunk, meta) => {
+          if (mp4Muxer) mp4Muxer.addAudioChunk(chunk, meta);
+          if (webmMuxer) webmMuxer.addAudioChunk(chunk, meta);
+        },
+        error: () => {},
+      });
+      audioEncoder.configure({
+        codec: webCodecsAudioCodecStr,
+        sampleRate: settings.sampleRate,
+        numberOfChannels: audioChannels.length,
+        bitrate: settings.audioBitrateKbps * 1000,
+      });
+
+      const numCh = audioChannels.length;
+      const totalSamples = audioChannels[0].length;
+      const chunkFrames = 960;
+      for (let offset = 0; offset < totalSamples; offset += chunkFrames) {
+        const count = Math.min(chunkFrames, totalSamples - offset);
+        const planar = new Float32Array(count * numCh);
+        for (let ch = 0; ch < numCh; ch++) {
+          planar.set(audioChannels[ch].subarray(offset, offset + count), ch * count);
+        }
+        const ad = new globalThis.AudioData({
+          format: 'f32-planar',
+          sampleRate: settings.sampleRate,
+          numberOfFrames: count,
+          numberOfChannels: numCh,
+          timestamp: Math.round((offset / settings.sampleRate) * 1_000_000),
+          data: planar,
+        });
+        audioEncoder.encode(ad);
+        ad.close();
+      }
+      await audioEncoder.flush();
+      audioEncoder.close();
+    } catch {
+      // Continue video export if audio encoder fails mid-stream
+    }
+  }
 
   let encoderError: Error | null = null;
   const videoEncoder = new globalThis.VideoEncoder({
